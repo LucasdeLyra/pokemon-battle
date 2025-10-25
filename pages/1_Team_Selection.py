@@ -4,9 +4,9 @@ import json
 import os
 
 # Make sure data_loader.py is in the same directory as this script.
-from data_loader import load_all_data_from_csvs
-POKEMON_DATA, _ = load_all_data_from_csvs()
-
+from utils.data_loader import load_all_data_from_csvs
+POKEMON_DATA, MOVES_DATA = load_all_data_from_csvs()
+ITEMS_PER_PAGE = 25
 # --- 1. App Configuration ---
 st.set_page_config(layout="wide")
 st.markdown("""
@@ -30,7 +30,7 @@ class Pokemon:
         self.name = name
         self.nickname = nickname
         self.moves = [move for move in moves if move] # Only store non-empty moves
-        self.icon_url = f"https://raw.githubusercontent.com/msikma/pokesprite/master/icons/pokemon/regular/{self.name.lower()}.png"
+        self.icon_path = POKEMON_DATA[self.name]['icon_path']
 
     def to_dict(self):
         """Converts the Pokemon object to a serializable dictionary."""
@@ -161,9 +161,8 @@ def render_team_section():
         with team_cols[i]:
             if i < len(st.session_state.team):
                 pokemon = st.session_state.team[i]
-                icon_data = get_cached_image(pokemon.icon_url)
-                if icon_data:
-                    st.image(icon_data, caption=pokemon.nickname)
+                if os.path.exists(pokemon.icon_path):
+                    st.image(pokemon.icon_path, caption=pokemon.nickname)
                 st.button("✖️", key=f"remove_{i}", on_click=remove_pokemon, args=(i,), help="Remove from team")
             else:
                 st.markdown('<div style="height:90px; width:60px; border: 2px dashed #555; border-radius: 5px;"></div>', unsafe_allow_html=True)
@@ -239,8 +238,6 @@ def render_pokemon_list_section():
     matching_pokemon = [p_name for p_name in POKEMON_DATA if search_query in p_name.lower()]
     filtered_pokemon = sorted(matching_pokemon, key=lambda p_name: POKEMON_DATA[p_name].get('id', 0))
     
-    # **CORRECTION**: Slicing the list for the current page
-    ITEMS_PER_PAGE = 25
     start_index = st.session_state.page_number * ITEMS_PER_PAGE
     end_index = start_index + ITEMS_PER_PAGE
     pokemon_to_display = filtered_pokemon[start_index:end_index]
@@ -248,8 +245,8 @@ def render_pokemon_list_section():
     for pkm_name in pokemon_to_display:
         pkm = POKEMON_DATA[pkm_name]
         list_cols = st.columns([0.5, 2, 1.5, 1, 1, 1, 1, 1, 1, 1])
-        icon_data = get_cached_image(f"https://raw.githubusercontent.com/msikma/pokesprite/master/icons/pokemon/regular/{pkm['name'].lower()}.png")
-        if icon_data: list_cols[0].image(icon_data, width=40)
+        if os.path.exists(pkm['icon_path']):
+            list_cols[0].image(pkm['icon_path'], width=40)
         list_cols[1].write(pkm["name"])
         list_cols[2].markdown(display_types(pkm["type"]), unsafe_allow_html=True)
         list_cols[3].write(pkm.get("hp", "N/A"))
@@ -295,9 +292,18 @@ def render_pokemon_moves_section():
 
     filtered_moves = [move for move in sorted(moves_list) if move_search_query in move.lower()]
     for move_name in filtered_moves:
-        cols = st.columns([3, 1])
-        with cols[0]: st.write(move_name.replace('-', ' ').capitalize())
-        with cols[1]: st.button("Select", key=f"select_move_{move_name}", on_click=assign_move, args=(move_name,), use_container_width=True)
+        move_data = MOVES_DATA.get(move_name, {})
+        cols = st.columns([2, 1, 1])
+        with cols[0]:
+            st.write(move_name.replace('-', ' ').capitalize())
+        with cols[1]:
+            power = move_data.get('power', 0)
+            if power > 0:
+                st.write(f"Power: {power}")
+            else:
+                st.write("Power: ---")
+        with cols[2]:
+            st.button("Select", key=f"select_move_{move_name}", on_click=assign_move, args=(move_name,), use_container_width=True)
 
 # --- 6. Main App Execution ---
 def main():

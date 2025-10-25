@@ -5,10 +5,10 @@ import streamlit as st
 import random
 import copy
 
-from data_loader import load_all_data_from_csvs
+from utils.data_loader import load_all_data_from_csvs
 POKEMON_DATA, MOVES = load_all_data_from_csvs()
-from game_logic import initialize_game, check_game_over
-from ui import battle_interface
+from utils.game_logic import initialize_game, check_game_over
+from utils.ui import battle_interface
 
 st.markdown("""
 <style>
