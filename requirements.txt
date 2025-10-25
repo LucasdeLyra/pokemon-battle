@@ -2,3 +2,5 @@ streamlit
 pandas
 streamlit-js-eval
 streamlit-extras
+firebase-admin
+python-dotenv
