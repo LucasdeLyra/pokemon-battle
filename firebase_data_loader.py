@@ -5,8 +5,14 @@ import os
 from pathlib import Path
 from typing import Dict, List
 import json
+import toml
 
-cred = credentials.Certificate("firebase-secrets.json")
+# Read TOML file and convert to dict
+with open("firebase-secrets.toml", "r") as f:
+    toml_data = toml.load(f)
+
+# Convert to JSON format for Firebase
+cred = credentials.Certificate(toml_data)
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
@@ -23,6 +29,7 @@ class FirebaseDataLoader:
         }
 
     def load_types(self):
+
         types_df = pd.read_csv(self.assets_path / "types.csv")
         efficacy_df = pd.read_csv(self.assets_path / "type_efficacy.csv")
         
@@ -77,7 +84,7 @@ class FirebaseDataLoader:
             moves_ref.document(str(move['id'])).set(move_data)
 
     def load_pokemon(self):
-        pokemon_df = pd.read_csv(self.assets_path / "pokemon.csv")
+        pokemon_df = pd.read_csv(self.assets_path / "pokemon.csv")[:493]
         pokemon_stats_df = pd.read_csv(self.assets_path / "pokemon_stats.csv")
         pokemon_types_df = pd.read_csv(self.assets_path / "pokemon_types.csv")
         pokemon_moves_df = pd.read_csv(self.assets_path / "pokemon_moves.csv")
@@ -123,8 +130,8 @@ class FirebaseDataLoader:
             pokemon_ref.document(pokemon_id).set(pokemon_data)
 
     def load_all_data(self):
-        self.load_types()
-        self.load_moves()
+        #self.load_types()
+        #self.load_moves()
         self.load_pokemon()
 
 if __name__ == "__main__":
