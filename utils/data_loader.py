@@ -2,15 +2,10 @@ import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore
 import os
-import json
-import toml
-
-# Read TOML file and convert to dict
-with open("firebase-secrets.toml", "r") as f:
-    toml_data = toml.load(f)
+from config import get_firebase_config
 
 if not firebase_admin._apps:
-    cred = credentials.Certificate(toml_data)
+    cred = credentials.Certificate(get_firebase_config())
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()

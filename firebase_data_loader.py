@@ -4,15 +4,10 @@ import pandas as pd
 import os
 from pathlib import Path
 from typing import Dict, List
-import json
-import toml
+from config import get_firebase_config
 
-# Read TOML file and convert to dict
-with open("firebase-secrets.toml", "r") as f:
-    toml_data = toml.load(f)
-
-# Convert to JSON format for Firebase
-cred = credentials.Certificate(toml_data)
+# Initialize Firebase with config from environment variables
+cred = credentials.Certificate(get_firebase_config())
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
