@@ -2,49 +2,46 @@ import streamlit as st
 import requests
 import json
 import os
+from utils.data_loader import (
+    load_pokemon_data,
+    load_moves_data,
+    get_type_name,
+    save_team_to_firebase,
+    load_teams_from_firebase,
+)
 
-# Make sure data_loader.py is in the same directory as this script.
-from utils.data_loader import load_all_data_from_csvs
-POKEMON_DATA, MOVES_DATA = load_all_data_from_csvs()
+POKEMON_DATA = load_pokemon_data()
+MOVES_DATA = load_moves_data()
 ITEMS_PER_PAGE = 25
-# --- 1. App Configuration ---
+
 st.set_page_config(layout="wide")
-st.markdown("""
-<style>
-    header, footer {visibility: hidden;}
 
-
-    .block-container {
-        padding-top: 0rem;
-        padding-bottom: 0rem;
-    }   
-</style>
-""",unsafe_allow_html=True)
-
-
-
-# --- 2. Pokémon Data Class ---
+#TODO: Criar as classes bonitinho para utilizar por todos os arquivos
 class Pokemon:
     """A class to represent a single, customized Pokémon instance in a team."""
     def __init__(self, name, nickname, moves):
         self.name = name
         self.nickname = nickname
-        self.moves = [move for move in moves if move] # Only store non-empty moves
-        self.icon_path = POKEMON_DATA[self.name]['icon_path']
+        self.moves = [move for move in moves if move]
+        self.sprite_data = POKEMON_DATA[self.name]['sprites']
 
     def to_dict(self):
-        """Converts the Pokemon object to a serializable dictionary."""
         return {"name": self.name, "nickname": self.nickname, "moves": self.moves}
 
     @classmethod
     def from_dict(cls, data):
-        """Creates a Pokemon object from a dictionary."""
         return cls(name=data["name"], nickname=data["nickname"], moves=data["moves"])
 
-# --- 3. Data & Session State ---
 TEAMS_FILE = "teams.json"
 
 def load_teams():
+    try:
+        fb_teams = load_teams_from_firebase()
+        if fb_teams:
+            return fb_teams
+    except Exception:
+        pass
+
     if not os.path.exists(TEAMS_FILE):
         return {}
     with open(TEAMS_FILE, 'r') as f:
@@ -62,19 +59,41 @@ if 'search_term' not in st.session_state: st.session_state.search_term = ""
 if 'pokemon_in_editor' not in st.session_state: st.session_state.pokemon_in_editor = None
 if 'active_move_slot' not in st.session_state: st.session_state.active_move_slot = None
 if 'circular_move_index' not in st.session_state: st.session_state.circular_move_index = 0
-# **CORRECTION**: Add page number for pagination
 if 'page_number' not in st.session_state: st.session_state.page_number = 0
 
 TYPE_COLORS = { 'normal': '#A8A77A', 'fire': '#EE8130', 'water': '#6390F0', 'electric': '#F7D02C', 'grass': '#7AC74C', 'ice': '#96D9D6', 'fighting': '#C22E28', 'poison': '#A33EA1', 'ground': '#E2BF65', 'flying': '#A98FF3', 'psychic': '#F95587', 'bug': '#A6B91A', 'rock': '#B6A136', 'ghost': '#735797', 'dragon': '#6F35FC', 'dark': '#705746', 'steel': '#B7B7CE', 'fairy': '#D685AD' }
 
-# --- 4. Helper Functions ---
-@st.cache_data(ttl=3600)
-def get_cached_image(url: str):
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        return response.content
-    except requests.exceptions.RequestException: return None
+
+def resolve_type_ref(type_ref):
+    if isinstance(type_ref, list):
+        resolved = []
+        for t in type_ref:
+            resolved.append(resolve_type_ref(t))
+        flat = []
+        for r in resolved:
+            if isinstance(r, list):
+                flat.extend(r)
+            else:
+                flat.append(r)
+        return flat
+
+    if type_ref is None:
+        return 'normal'
+
+    s = str(type_ref).strip()
+    if s == '':
+        return 'normal'
+
+    cleaned = s.strip('/').strip()
+    if cleaned.replace('.', '').isdigit():
+        try:
+            type_id = str(int(float(cleaned)))
+            type_name = get_type_name(type_id)
+            return type_name.lower() if type_name else 'normal'
+        except Exception:
+            return 'normal'
+
+    return s.lower()
 
 def display_types(types):
     if isinstance(types, str): types = [types]
@@ -95,7 +114,6 @@ def handle_search_change():
     if st.session_state.selected_pokemon and st.session_state.search_term != st.session_state.selected_pokemon:
         st.session_state.selected_pokemon = None
         st.session_state.pokemon_in_editor = None
-    # **CORRECTION**: Reset page number on a new search
     st.session_state.page_number = 0
 
 
@@ -103,7 +121,6 @@ def close_moves_view():
     st.session_state.selected_pokemon = None
     st.session_state.pokemon_in_editor = None
     st.session_state.search_term = ""
-    # **CORRECTION**: Reset page number when returning to the list
     st.session_state.page_number = 0
 
 def set_active_move_slot(slot_index):
@@ -125,7 +142,6 @@ def assign_move(move_name):
     st.session_state.pokemon_in_editor["moves"][target_slot] = move_name
     st.session_state.active_move_slot = None
 
-# --- 5. UI Rendering Functions ---
 def render_team_management_section():
     saved_team_names = list(st.session_state.saved_teams.keys())
     selected_team_to_load = st.selectbox("Load a saved team", options=saved_team_names, index=None, placeholder="Select a team to load...")
@@ -140,18 +156,23 @@ def render_team_management_section():
     save_cols = st.columns([3, 1])
     with save_cols[0]: st.text_input("Team Name", key="current_team_name", label_visibility="collapsed")
     with save_cols[1]:
-        if st.button("Save Team", use_container_width=True):
-            team_name = st.session_state.current_team_name
-            if not team_name: st.warning("Please enter a name for your team.")
-            elif not st.session_state.team: st.warning("Your team is empty. Add some Pokémon before saving.")
-            else:
-                serializable_team = [p.to_dict() for p in st.session_state.team]
-                st.session_state.saved_teams[team_name] = serializable_team
-                save_teams(st.session_state.saved_teams)
-                st.success(f"Team '{team_name}' saved successfully!")
+                if st.button("Save Team", use_container_width=True):
+                    team_name = st.session_state.current_team_name
+                    if not team_name:
+                        st.warning("Please enter a name for your team.")
+                    elif not st.session_state.team:
+                        st.warning("Your team is empty. Add some Pokémon before saving.")
+                    else:
+                        serializable_team = [p.to_dict() for p in st.session_state.team]
+                        st.session_state.saved_teams[team_name] = serializable_team
+                        try:
+                            save_team_to_firebase(team_name, serializable_team)
+                        except Exception as e:
+                            st.warning(f"Could not save to Firebase: {e}")
+                        save_teams(st.session_state.saved_teams)
+                        st.success(f"Team '{team_name}' saved successfully!")
 
 def render_team_section():
-    """Renders the 6-slot team preview, now with Pokemon objects."""
     def remove_pokemon(index):
         if 0 <= index < len(st.session_state.team):
             st.session_state.team.pop(index)
@@ -161,15 +182,17 @@ def render_team_section():
         with team_cols[i]:
             if i < len(st.session_state.team):
                 pokemon = st.session_state.team[i]
-                if os.path.exists(pokemon.icon_path):
-                    st.image(pokemon.icon_path, caption=pokemon.nickname)
+                if pokemon.sprite_data and pokemon.sprite_data.get('icon'):
+                    sprite_ref = pokemon.sprite_data['icon']
+                    local_path = os.path.join('assets', sprite_ref)
+                    if os.path.exists(local_path):
+                        st.image(local_path, caption=pokemon.nickname)
                 st.button("✖️", key=f"remove_{i}", on_click=remove_pokemon, args=(i,), help="Remove from team")
             else:
                 st.markdown('<div style="height:90px; width:60px; border: 2px dashed #555; border-radius: 5px;"></div>', unsafe_allow_html=True)
 
 
 def render_selected_pokemon_section():
-    """Renders the main Pokémon editor, now with an 'Add to Team' button."""
     def add_to_team():
         editor_pkm = st.session_state.pokemon_in_editor
         if len(st.session_state.team) >= 6:
@@ -191,8 +214,17 @@ def render_selected_pokemon_section():
         with main_cols[0]:
             st.text_input("Nickname", value=pkm_editor["nickname"] if pkm_editor else "", key="nickname_input")
             if pkm_data:
-                sprite_data = get_cached_image(f"https://play.pokemonshowdown.com/sprites/ani/{pkm_data['name'].lower()}.gif")
-                if sprite_data: st.image(sprite_data)
+                sprite_ref = None
+                sprites = pkm_data.get('sprites', {}) if isinstance(pkm_data, dict) else {}
+                for key in ('front', 'front_default', 'front_shiny', 'icon'):
+                    if sprites.get(key):
+                        sprite_ref = sprites.get(key)
+                        break
+
+                if sprite_ref:
+                    local_path = os.path.join('assets', sprite_ref)
+                    if os.path.exists(local_path):
+                        st.image(local_path)
             else: st.markdown('<div style="height:96px; width:96px;"></div>', unsafe_allow_html=True)
             st.text_input("Pokemon", key="search_term", on_change=handle_search_change)
         with main_cols[1]:
@@ -211,7 +243,13 @@ def render_selected_pokemon_section():
                                 st.button(display_text, key=f"move_slot_{i}", on_click=set_active_move_slot, args=(i,), use_container_width=True)
                             with move_cols[1]:
                                 if move_name:
-                                    st.markdown(display_types(pkm_data['type']), unsafe_allow_html=True)
+                                    move_info = MOVES_DATA.get(move_name, {})
+                                    move_type_ref = move_info.get('type')
+                                    if move_type_ref:
+                                        move_type_name = resolve_type_ref(move_type_ref)
+                                        st.markdown(display_types([move_type_name]) if isinstance(move_type_name, str) else display_types(move_type_name), unsafe_allow_html=True)
+                                    else:
+                                        st.markdown(display_types(pkm_data['type']), unsafe_allow_html=True)
                     with aux_cols[1]:
                         st.subheader("Stats")
                         stats_cols = st.columns(2)
@@ -220,7 +258,7 @@ def render_selected_pokemon_section():
                             for stat_name, stat_key in stats_left.items():
                                 st.write(f"**{stat_name}**: {pkm_data.get(stat_key, 'N/A')}")
                         with stats_cols[1]:
-                            stats_right = {'Spe': 'speed', 'SpA': 'special-attack', 'SpD': 'special-defense'}
+                            stats_right = {'Spe': 'speed', 'SpA': 'special_attack', 'SpD': 'special_defense'}
                             for stat_name, stat_key in stats_right.items():
                                 st.write(f"**{stat_name}**: {pkm_data.get(stat_key, 'N/A')}")
                         st.write("") 
@@ -230,7 +268,7 @@ def render_selected_pokemon_section():
                     aux_empty.empty()
         
 def render_pokemon_list_section():
-    header_cols = st.columns([0.5, 2, 1.5, 1, 1, 1, 1, 1, 1, 1])
+    header_cols = st.columns([0.5, 2, 3, 1, 1, 1, 1, 1, 1, 1])
     headers = ["", "Name", "Types", "HP", "Attack", "Defense", "Special Attack", "Special Defense", "Speed", "Action"]
     for col, header in zip(header_cols, headers): col.markdown(f"**{header}**")
     
@@ -244,22 +282,27 @@ def render_pokemon_list_section():
     
     for pkm_name in pokemon_to_display:
         pkm = POKEMON_DATA[pkm_name]
-        list_cols = st.columns([0.5, 2, 1.5, 1, 1, 1, 1, 1, 1, 1])
-        if os.path.exists(pkm['icon_path']):
-            list_cols[0].image(pkm['icon_path'], width=40)
+        list_cols = st.columns([0.5, 2, 3, 1, 1, 1, 1, 1, 1, 1])
+        if pkm.get('sprites', {}).get('icon'):
+            sprite_ref = pkm['sprites']['icon']
+            local_path = os.path.join('assets', sprite_ref)
+            if os.path.exists(local_path):
+                list_cols[0].image(local_path, width=40)
         list_cols[1].write(pkm["name"])
-        list_cols[2].markdown(display_types(pkm["type"]), unsafe_allow_html=True)
+        types = resolve_type_ref(pkm.get("type", []))
+        if isinstance(types, str):
+            types = [types]
+        list_cols[2].markdown(display_types(types), unsafe_allow_html=True)
         list_cols[3].write(pkm.get("hp", "N/A"))
         list_cols[4].write(pkm.get("attack", "N/A"))
         list_cols[5].write(pkm.get("defense", "N/A"))
-        list_cols[6].write(pkm.get("special-attack", "N/A"))
-        list_cols[7].write(pkm.get("special-defense", "N/A"))
+        list_cols[6].write(pkm.get("special_attack", "N/A"))
+        list_cols[7].write(pkm.get("special_defense", "N/A"))
         list_cols[8].write(pkm.get("speed", "N/A"))
         list_cols[9].button("Select", key=f"select_{pkm_name}", on_click=select_pokemon, args=(pkm_name,))
 
     st.divider()
 
-    # **CORRECTION**: Adding pagination controls
     page_cols = st.columns([1, 1, 1])
     with page_cols[0]:
         if st.session_state.page_number > 0:
@@ -280,18 +323,54 @@ def render_pokemon_list_section():
 def render_pokemon_moves_section():
     pkm_name = st.session_state.selected_pokemon
     aux_columns = st.columns([1, 3])
-    moves_list = POKEMON_DATA.get(pkm_name, {}).get('moves', [])
-    if not moves_list:
+    raw_moves = POKEMON_DATA.get(pkm_name, {}).get('moves', [])
+    if not raw_moves:
         st.write("This Pokémon has no moves available in the dataset.")
         return
-    
+
     with aux_columns[0]:
         st.button("⬅️ Back to Pokémon List", on_click=close_moves_view)
     with aux_columns[1]:
         move_search_query = st.text_input("Search for a move...").lower()
 
-    filtered_moves = [move for move in sorted(moves_list) if move_search_query in move.lower()]
-    for move_name in filtered_moves:
+    move_id_to_name = {}
+    for name, mdata in MOVES_DATA.items():
+        mid = mdata.get('id')
+        if mid is not None:
+            move_id_to_name[str(mid)] = name
+
+    def normalize_move_id(mref):
+        try:
+            if isinstance(mref, str):
+                s = mref.strip()
+                if s == '':
+                    return s
+                if '.' in s:
+                    return str(int(float(s)))
+                return s
+            if isinstance(mref, float) or isinstance(mref, int):
+                return str(int(mref))
+            return str(mref)
+        except Exception:
+            return str(mref)
+
+    allowed_moves = []
+    for m in raw_moves:
+        mid = normalize_move_id(m)
+        name = move_id_to_name.get(mid)
+        if name:
+            allowed_moves.append(name)
+
+    seen = set()
+    allowed_moves_ordered = []
+    for mv in allowed_moves:
+        if mv not in seen:
+            seen.add(mv)
+            allowed_moves_ordered.append(mv)
+
+    filtered_moves = [mv for mv in allowed_moves_ordered if move_search_query in mv.lower()]
+
+    for idx, move_name in enumerate(filtered_moves):
         move_data = MOVES_DATA.get(move_name, {})
         cols = st.columns([2, 1, 1])
         with cols[0]:
@@ -303,9 +382,8 @@ def render_pokemon_moves_section():
             else:
                 st.write("Power: ---")
         with cols[2]:
-            st.button("Select", key=f"select_move_{move_name}", on_click=assign_move, args=(move_name,), use_container_width=True)
+            st.button("Select", key=f"select_move_{move_name}_{idx}", on_click=assign_move, args=(move_name,), use_container_width=True)
 
-# --- 6. Main App Execution ---
 def main():
     render_team_management_section()
     st.divider()

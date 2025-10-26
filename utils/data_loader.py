@@ -1,74 +1,162 @@
 import streamlit as st
-import pandas as pd
+import firebase_admin
+from firebase_admin import credentials, firestore
 import os
 
-# --- TYPE EFFECTIVENESS DATA ---
-TYPE_CHART = {
-    'normal': {'rock': 0.5, 'ghost': 0},
-    'fire': {'fire': 0.5, 'water': 0.5, 'grass': 2, 'ice': 2, 'bug': 2, 'rock': 0.5, 'dragon': 0.5},
-    'water': {'fire': 2, 'water': 0.5, 'grass': 0.5, 'ground': 2, 'rock': 2, 'dragon': 0.5},
-    'electric': {'water': 2, 'electric': 0.5, 'grass': 0.5, 'ground': 0, 'flying': 2, 'dragon': 0.5},
-    'grass': {'fire': 0.5, 'water': 2, 'grass': 0.5, 'poison': 0.5, 'ground': 2, 'flying': 0.5, 'bug': 0.5, 'rock': 2, 'dragon': 0.5},
-    'fighting': {'normal': 2, 'poison': 0.5, 'flying': 0.5, 'psychic': 0.5, 'bug': 0.5, 'rock': 2, 'ghost': 0},
-    'ground': {'fire': 2, 'electric': 2, 'grass': 0.5, 'poison': 2, 'flying': 0, 'bug': 0.5, 'rock': 2},
-    'flying': {'electric': 0.5, 'grass': 2, 'fighting': 2, 'bug': 2, 'rock': 0.5},
-    'psychic': {'fighting': 2, 'poison': 2, 'psychic': 0.5, 'ghost': 1},
-    'bug': {'fire': 0.5, 'grass': 2, 'fighting': 0.5, 'poison': 0.5, 'flying': 0.5, 'psychic': 2, 'ghost': 0.5},
-    'rock': {'fire': 2, 'fighting': 0.5, 'ground': 0.5, 'flying': 2, 'bug': 2},
-    'ghost': {'normal': 0, 'psychic': 2, 'ghost': 2},
-    'dragon': {'dragon': 2},
-}
+if not firebase_admin._apps:
+    cred = credentials.Certificate("firebase-secrets.json")
+    firebase_admin.initialize_app(cred)
 
-def get_pokemon_icon_path(pokemon_name, assets_path="assets"):
-    """Get the path to a Pokemon's icon."""
-    icon_path = os.path.join(assets_path, 'icons', f"{pokemon_name.lower()}.png")
-    return icon_path if os.path.exists(icon_path) else None
+db = firestore.client()
 
-@st.cache_data
-def load_all_data_from_csvs(assets_path="assets"):
-    """Loads all necessary game data from CSV files into structured dictionaries."""
-    try:
-        pokemon_df = pd.read_csv(os.path.join(assets_path, 'pokemon.csv'))
-        types_df = pd.read_csv(os.path.join(assets_path, 'types.csv'))
-        stats_df = pd.read_csv(os.path.join(assets_path, 'stats.csv'))
-        moves_df = pd.read_csv(os.path.join(assets_path, 'moves.csv'))
-        pokemon_types_df = pd.read_csv(os.path.join(assets_path, 'pokemon_types.csv'))
-        pokemon_stats_df = pd.read_csv(os.path.join(assets_path, 'pokemon_stats.csv'))
-        pokemon_moves_df = pd.read_csv(os.path.join(assets_path, 'pokemon_moves.csv'))
-    except FileNotFoundError as e:
-        st.error(f"Error loading CSV files: {e}. Ensure the 'assets' folder is present.")
-        return {}, {}
-
-    pokemon_df = pokemon_df[pokemon_df['id'] <= 493]
-    type_map = types_df.set_index('id')['identifier'].to_dict()
-    stat_map = stats_df.set_index('id')['identifier'].to_dict()
-    move_map = moves_df.set_index('id')['identifier'].to_dict()
-
-    moves_data = {
-        row['identifier']: {'power': int(row['power']), 'type': type_map.get(row['type_id'], 'normal')}
-        for _, row in moves_df.iterrows() if pd.notna(row['power'])
-    }
-
+@st.cache_data(ttl=3600) 
+def load_pokemon_data():
+    pokemon_ref = db.collection('pokemon')
+    pokemon_docs = pokemon_ref.stream()
+    
     pokemon_data = {}
-    for _, p_row in pokemon_df.iterrows():
-        pokemon_id = p_row['id']
-        p_types = pokemon_types_df[(pokemon_types_df['pokemon_id'] == pokemon_id)]
-        p_move_ids = pokemon_moves_df[pokemon_moves_df['pokemon_id'] == pokemon_id]['move_id']
-        
-        pokemon_name = p_row['identifier'].capitalize()
-        new_pokemon = {
-            "id": pokemon_id, 
+    for doc in pokemon_docs:
+        pokemon = doc.to_dict()
+        pokemon_name = pokemon['name'].capitalize()
+        types = []
+        for type_id in pokemon.get('types', []):
+            type_name = get_type_name(str(type_id))
+            if type_name:
+                types.append(type_name.lower())
+                
+        pokemon_data[pokemon_name] = {
+            "id": pokemon['id'],
             "name": pokemon_name,
-            "icon_path": os.path.join(assets_path, 'icons', f"{pokemon_id}.png")
+            "type": types, 
+            "moves": pokemon['moves'],
+            "hp": pokemon['stats']['hp'],
+            "attack": pokemon['stats']['attack'],
+            "defense": pokemon['stats']['defense'],
+            "special_attack": pokemon['stats']['special_attack'],
+            "special_defense": pokemon['stats']['special_defense'],
+            "speed": pokemon['stats']['speed'],
+            "sprites": pokemon['sprites']
         }
-        new_pokemon['type'] = type_map.get(p_types.iloc[0]['type_id'], 'normal') if not p_types.empty else 'normal'
-        new_pokemon['moves'] = set(move_map.get(mid) for mid in p_move_ids if mid in move_map and move_map.get(mid) in moves_data)
-        
-        p_stats = pokemon_stats_df[pokemon_stats_df['pokemon_id'] == pokemon_id]
-        for _, stat_row in p_stats.iterrows():
-            stat_name = stat_map.get(stat_row['stat_id'])
-            new_pokemon[stat_name] = stat_row['base_stat']
-        
-        pokemon_data[new_pokemon['name']] = new_pokemon
+    
+    return pokemon_data
 
+@st.cache_data(ttl=3600)
+def load_moves_data():
+    """Load all moves data from Firebase."""
+    moves_ref = db.collection('moves')
+    moves_docs = moves_ref.stream()
+    
+    moves_data = {}
+    for doc in moves_docs:
+        move = doc.to_dict()
+        move_type = get_type_name(str(move.get('type')))
+        if move_type:
+            move_type = move_type.lower()
+            
+        moves_data[move['name']] = {
+            'id': move['id'],
+            'power': move['power'],
+            'type': move_type 
+        }
+    
+    return moves_data
+
+@st.cache_data(ttl=3600)
+def load_type_effectiveness():
+    types_ref = db.collection('types')
+    types_docs = types_ref.stream()
+    
+    type_chart = {}
+    for doc in types_docs:
+        type_data = doc.to_dict()
+        type_name = type_data['name'].lower()
+        damage_relations = type_data['damage_relations']
+        
+        effectiveness = {}
+        effectiveness = {get_type_name(str(i)).lower(): 1.0 for i in range(1, 19)}
+        
+        for target_id in damage_relations['double_damage_to']:
+            target_type = get_type_name(str(target_id)).lower()
+            effectiveness[target_type] = 2.0
+            
+        for target_id in damage_relations['half_damage_to']:
+            target_type = get_type_name(str(target_id)).lower()
+            effectiveness[target_type] = 0.5
+            
+        for target_id in damage_relations['no_damage_to']:
+            target_type = get_type_name(str(target_id)).lower()
+            effectiveness[target_type] = 0
+            
+        type_chart[type_name] = effectiveness
+    
+    return type_chart
+
+@st.cache_data(ttl=3600)
+def get_type_name(type_id):
+    type_id = str(type_id).strip('/')
+    if not type_id or not type_id.strip(): 
+        return 'normal'
+    
+    type_doc = db.collection('types').document(type_id).get()
+    if type_doc.exists:
+        type_name = type_doc.to_dict()['name']
+        return type_name
+    else:
+        return 'normal'
+
+def get_pokemon_sprite_url(pokemon_name, front=True):
+    pokemon_name = pokemon_name.lower()
+    pokemon_data = next(
+        (p for p in load_pokemon_data().values() if p['name'].lower() == pokemon_name),
+        None
+    )
+    
+    if pokemon_data:
+        return pokemon_data['sprites']['front'] if front else pokemon_data['sprites']['back']
+    return None
+
+def get_pokemon_icon_url(pokemon_name):
+    pokemon_name = pokemon_name.lower()
+    pokemon_data = next(
+        (p for p in load_pokemon_data().values() if p['name'].lower() == pokemon_name),
+        None
+    )
+    
+    if pokemon_data:
+        return pokemon_data['sprites']['icon']
+    return None
+
+def load_all_data_from_csvs(assets_path="assets"):
+    """Depreacted: olhe os commits antigos para entender melhor"""
+    pokemon_data = load_pokemon_data()
+    moves_data = load_moves_data()
     return pokemon_data, moves_data
+
+
+def save_team_to_firebase(team_name: str, team_data: list, user_id: str = None):
+    teams_ref = db.collection('teams')
+    doc_id = f"{user_id}_" + team_name if user_id else team_name
+    doc_id = str(doc_id).replace('/', '_')
+    payload = {
+        'name': team_name,
+        'team': team_data,
+        'user_id': user_id,
+        'updated_at': firestore.SERVER_TIMESTAMP,
+    }
+    teams_ref.document(doc_id).set(payload)
+
+
+def load_teams_from_firebase(user_id: str = None):
+    teams_ref = db.collection('teams')
+    teams = {}
+    if user_id:
+        docs = teams_ref.where('user_id', '==', user_id).stream()
+    else:
+        docs = teams_ref.stream()
+
+    for doc in docs:
+        data = doc.to_dict()
+        name = data.get('name') or doc.id
+        teams[name] = data.get('team', [])
+
+    return teams

@@ -1,0 +1,30 @@
+{
+    "Time teste 1": [
+        {
+            "name": "Bulbasaur",
+            "nickname": "",
+            "moves": [
+                "leech-seed"
+            ]
+        }
+    ],
+    "My New Team": [
+        {
+            "name": "Bulbasaur",
+            "nickname": "",
+            "moves": [
+                "tackle",
+                "leech-seed"
+            ]
+        },
+        {
+            "name": "Charizard",
+            "nickname": "",
+            "moves": [
+                "double-edge",
+                "hyper-beam",
+                "flamethrower"
+            ]
+        }
+    ]
+}
